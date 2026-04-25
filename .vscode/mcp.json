@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "nikouz-calendar-data": {
+      "command": "node",
+      "args": [
+        "/Users/nmura/dev/perso/ia-tests/mcp-server-custom/dist/server.js"
+      ]
+    }
+  }
+}

@@ -1,0 +1,213 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import dotenv from "dotenv";
+import { google } from "googleapis";
+import { z } from "zod";
+
+dotenv.config();
+
+const INPUT_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const CALENDAR_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/calendar.readonly";
+const DEFAULT_TIMEZONE =
+  process.env.CALENDAR_TIMEZONE ??
+  Intl.DateTimeFormat().resolvedOptions().timeZone ??
+  "UTC";
+
+// create the MCP server
+const server = new McpServer({
+  name: "Nikouz's Calendar",
+  version: "1.0.0",
+});
+
+const formatDateInTimeZone = (date: Date, timeZone: string): string => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  if (!year || !month || !day) {
+    return "";
+  }
+
+  return `${year}-${month}-${day}`;
+};
+
+const formatTimeInTimeZone = (date: Date, timeZone: string): string => {
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+};
+
+const isGoogleApiLikeError = (
+  err: unknown,
+): err is { code?: number; message?: string } => {
+  return typeof err === "object" && err !== null && "message" in err;
+};
+
+const getCalendarAuth = () => {
+  const serviceAccountClientEmail =
+    process.env.GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL;
+  const serviceAccountPrivateKey =
+    process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+  const delegatedUserEmail = process.env.GOOGLE_DELEGATED_USER_EMAIL;
+
+  if (
+    !serviceAccountClientEmail ||
+    !serviceAccountPrivateKey ||
+    !delegatedUserEmail
+  ) {
+    return {
+      error:
+        "Server misconfiguration: GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY and GOOGLE_DELEGATED_USER_EMAIL are all required.",
+    };
+  }
+
+  const auth = new google.auth.JWT({
+    email: serviceAccountClientEmail,
+    key: serviceAccountPrivateKey.replace(/\\n/g, "\n"),
+    scopes: [CALENDAR_READONLY_SCOPE],
+    subject: delegatedUserEmail,
+  });
+
+  return {
+    auth,
+    authMode: "service-account-delegation" as const,
+  };
+};
+
+// tool function
+const getMyCalendarDataByDate = async (date: string) => {
+  const calendarId = process.env.CALENDAR_ID;
+
+  if (!calendarId) {
+    return {
+      error: "Server misconfiguration: CALENDAR_ID is required.",
+    };
+  }
+
+  const authResult = getCalendarAuth();
+  if ("error" in authResult) {
+    return {
+      error: authResult.error,
+    };
+  }
+
+  const calendar = google.calendar({
+    version: "v3",
+    auth: authResult.auth,
+  });
+
+  const dayStartUtc = new Date(`${date}T00:00:00.000Z`);
+  const queryStartUtc = new Date(dayStartUtc);
+  queryStartUtc.setUTCDate(queryStartUtc.getUTCDate() - 1);
+  const queryEndUtc = new Date(dayStartUtc);
+  queryEndUtc.setUTCDate(queryEndUtc.getUTCDate() + 2);
+
+  try {
+    const res = await calendar.events.list({
+      calendarId,
+      timeMin: queryStartUtc.toISOString(),
+      timeMax: queryEndUtc.toISOString(),
+      maxResults: 250,
+      singleEvents: true,
+      orderBy: "startTime",
+      timeZone: DEFAULT_TIMEZONE,
+    });
+
+    const events = res.data.items || [];
+    const meetings = events
+      .filter((event) => {
+        const allDayDate = event.start?.date;
+        if (allDayDate) {
+          return allDayDate === date;
+        }
+
+        const dateTime = event.start?.dateTime;
+        if (!dateTime) {
+          return false;
+        }
+
+        return (
+          formatDateInTimeZone(new Date(dateTime), DEFAULT_TIMEZONE) === date
+        );
+      })
+      .map((event) => {
+        const title = event.summary?.trim() || "(No title)";
+
+        if (event.start?.date) {
+          return `${title} (all-day)`;
+        }
+
+        if (event.start?.dateTime) {
+          const when = formatTimeInTimeZone(
+            new Date(event.start.dateTime),
+            DEFAULT_TIMEZONE,
+          );
+          return `${title} at ${when}`;
+        }
+
+        return `${title} (time unavailable)`;
+      });
+
+    return {
+      date,
+      timezone: DEFAULT_TIMEZONE,
+      authMode: authResult.authMode,
+      meetings,
+    };
+  } catch (err) {
+    if (isGoogleApiLikeError(err)) {
+      const statusInfo = err.code ? ` (status ${err.code})` : "";
+      return {
+        error: `Google Calendar request failed${statusInfo}: ${err.message ?? "Unknown error"}`,
+      };
+    }
+
+    return {
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+};
+
+// register the tool to MCP
+server.registerTool(
+  "getMyCalendarDataByDate",
+  {
+    description:
+      "Returns meetings from my Google Calendar for a given date (YYYY-MM-DD), including all-day events and timezone-aware times.",
+    inputSchema: {
+      date: z.string().regex(INPUT_DATE_REGEX, {
+        message: "Invalid date format. Expected YYYY-MM-DD.",
+      }),
+    },
+  },
+  async ({ date }) => {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(await getMyCalendarDataByDate(date)),
+        },
+      ],
+    };
+  },
+);
+
+// set transfer protocol and start the server
+const init = async () => {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+};
+
+// call the initialization
+init();
