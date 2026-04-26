@@ -6,7 +6,7 @@ services:
     region: frankfurt
     branch: main
     autoDeploy: false
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --production=false && npm run build
     startCommand: node dist/server.js
     healthCheckPath: /healthz
     envVars:
