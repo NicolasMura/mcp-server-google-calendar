@@ -1,8 +1,17 @@
 {
   "servers": {
+    "nikouzCalendarData": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/server.js"],
+      "envFile": "${workspaceFolder}/.env"
+    },
     "nikouzCalendarDataRemote": {
       "type": "http",
-      "url": "https://mcp-server-google-calendar.onrender.com/mcp"
+      "url": "https://mcp-server-google-calendar.onrender.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_API_KEY}"
+      }
     }
   }
 }

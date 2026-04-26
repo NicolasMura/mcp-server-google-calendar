@@ -151,6 +151,34 @@ Endpoints HTTP:
 - `POST /mcp` -> endpoint MCP
 - `GET /healthz` -> healthcheck
 
+## Securite mode HTTP remote (obligatoire)
+
+En mode `MCP_TRANSPORT=http`, le serveur impose maintenant:
+
+- Authentification Bearer obligatoire sur `POST /mcp`
+- Validation stricte des hosts autorises pour limiter le risque DNS rebinding
+- Endpoint `GET /healthz` public pour le healthcheck Render
+
+Variables a configurer:
+
+```shell
+MCP_API_KEY=<SECRET_FORT>
+ALLOWED_HOSTS=mcp-server-google-calendar.onrender.com
+ALLOW_ANY_HOST=false
+```
+
+Generation d'une cle forte:
+
+```shell
+openssl rand -hex 32
+```
+
+Reponses attendues:
+
+- `POST /mcp` sans token ou token invalide -> `401 Unauthorized`
+- `POST /mcp` avec host non autorise -> `400 Bad Request`
+- `GET /healthz` sans auth -> `200 OK`
+
 - Deploiement en ligne (exemple Railway/Render/Fly.io)
 
 1. Push du repo sur GitHub.
@@ -169,6 +197,10 @@ CALENDAR_TIMEZONE=Europe/Paris
 GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL=<SERVICE_ACCOUNT_CLIENT_EMAIL>
 GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 GOOGLE_DELEGATED_USER_EMAIL=<USER_TO_IMPERSONATE>
+
+MCP_API_KEY=<SECRET_FORT>
+ALLOWED_HOSTS=<ton-domaine>
+ALLOW_ANY_HOST=false
 ```
 
 6. Deploy.
@@ -201,6 +233,9 @@ Le serveur est déjà configuré pour Render avec le fichier `render.yaml`:
      GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY=<PRIVATE_KEY_WITH_ESCAPED_NEWLINES>
      GOOGLE_DELEGATED_USER_EMAIL=<USER_TO_IMPERSONATE>
      CALENDAR_TIMEZONE=Europe/Paris (optionnel)
+     MCP_API_KEY=<SECRET_FORT>
+     ALLOWED_HOSTS=mcp-server-google-calendar.onrender.com
+     ALLOW_ANY_HOST=false
      ```
    - Clique sur **"Deploy"** dans le dashboard pour lancer le premier déploiement
    - Attends que le build réussisse et le service démarre
@@ -213,15 +248,20 @@ Le serveur est déjà configuré pour Render avec le fichier `render.yaml`:
    {
      "nikouzCalendarDataRemote": {
        "type": "http",
-       "url": "https://mcp-server-google-calendar.onrender.com/mcp"
+       "url": "https://mcp-server-google-calendar.onrender.com/mcp",
+       "headers": {
+         "Authorization": "Bearer ${env:MCP_API_KEY}"
+       }
      }
    }
    ```
 
 5. **Sécurité:**
    - Ne commit jamais les credentials Google (utilise le dashboard Render)
-   - L'accès au /mcp est public; ajoute une auth (OAuth/Bearer) si souhaité
-   - Sur plan free, le service peut hiberner après 15 min d'inactivité
+
+- Configure `MCP_API_KEY` comme secret Render (obligatoire en mode HTTP)
+- Restreins `ALLOWED_HOSTS` a ton domaine Render
+- Sur plan free, le service peut hiberner après 15 min d'inactivité
 
 - Connecter Copilot a la version distante
 
@@ -238,7 +278,10 @@ Dans `.vscode/mcp.json`, tu peux ajouter un serveur HTTP distant en gardant le s
     },
     "nikouzCalendarDataRemote": {
       "type": "http",
-      "url": "https://<ton-domaine>/mcp"
+      "url": "https://<ton-domaine>/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:MCP_API_KEY}"
+      }
     }
   }
 }
@@ -246,5 +289,5 @@ Dans `.vscode/mcp.json`, tu peux ajouter un serveur HTTP distant en gardant le s
 
 Important securite:
 
-- Tu exposes un acces lecture agenda: protege l'URL publique (au minimum un secret de reverse proxy, idealement auth).
+- Tu exposes un acces lecture agenda: conserve une cle `MCP_API_KEY` forte et fais une rotation reguliere.
 - Ne commit jamais les credentials Google.

@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createPrivateKey } from "node:crypto";
+import { createPrivateKey, timingSafeEqual } from "node:crypto";
 import dotenv from "dotenv";
 import type { Request, Response } from "express";
 import { google } from "googleapis";
@@ -20,6 +20,12 @@ const DEFAULT_TIMEZONE =
 const MCP_TRANSPORT = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
 const HTTP_HOST = process.env.HOST ?? "0.0.0.0";
 const HTTP_PORT = Number(process.env.PORT ?? "3000");
+const MCP_API_KEY = process.env.MCP_API_KEY?.trim() ?? "";
+const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS ?? "")
+  .split(",")
+  .map((host) => host.trim().toLowerCase())
+  .filter(Boolean);
+const ALLOW_ANY_HOST = process.env.ALLOW_ANY_HOST === "true";
 
 const formatDateInTimeZone = (date: Date, timeZone: string): string => {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -87,6 +93,32 @@ const isReadablePrivateKey = (privateKey: string): boolean => {
   } catch {
     return false;
   }
+};
+
+const constantTimeEqual = (left: string, right: string): boolean => {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+};
+
+const isAuthorizedMcpRequest = (req: Request): boolean => {
+  const authorization = req.get("authorization");
+
+  if (!authorization?.startsWith("Bearer ")) {
+    return false;
+  }
+
+  const token = authorization.slice("Bearer ".length).trim();
+  if (!token || !MCP_API_KEY) {
+    return false;
+  }
+
+  return constantTimeEqual(token, MCP_API_KEY);
 };
 
 const getCalendarAuth = () => {
@@ -270,7 +302,43 @@ const sendJsonRpcMethodNotAllowed = (res: Response) => {
 };
 
 const startHttpServer = () => {
-  const app = createMcpExpressApp({ host: HTTP_HOST });
+  if (!MCP_API_KEY) {
+    throw new Error(
+      "HTTP mode requires MCP_API_KEY for mandatory /mcp authentication.",
+    );
+  }
+
+  if (!ALLOW_ANY_HOST && ALLOWED_HOSTS.length === 0) {
+    throw new Error(
+      "HTTP mode requires ALLOWED_HOSTS unless ALLOW_ANY_HOST=true.",
+    );
+  }
+
+  const app = createMcpExpressApp({
+    host: HTTP_HOST,
+    allowedHosts: ALLOW_ANY_HOST ? undefined : ALLOWED_HOSTS,
+  });
+
+  app.use("/mcp", (req: Request, res: Response, next) => {
+    if (isAuthorizedMcpRequest(req)) {
+      next();
+      return;
+    }
+
+    console.warn("Unauthorized /mcp request rejected", {
+      ip: req.ip,
+      userAgent: req.get("user-agent") ?? "unknown",
+    });
+
+    return res.status(401).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32001,
+        message: "Unauthorized.",
+      },
+      id: null,
+    });
+  });
 
   app.get("/healthz", (_req: Request, res: Response) => {
     return res.status(200).json({
@@ -318,6 +386,17 @@ const startHttpServer = () => {
   });
 
   app.listen(HTTP_PORT, HTTP_HOST, () => {
+    console.log("MCP HTTP authentication is enabled on /mcp (Bearer token).");
+    if (ALLOW_ANY_HOST) {
+      console.warn(
+        "ALLOW_ANY_HOST=true disables DNS rebinding protection for host headers.",
+      );
+    } else {
+      console.log(
+        `MCP HTTP allowed hosts: ${ALLOWED_HOSTS.join(", ") || "(none)"}`,
+      );
+    }
+
     console.log(
       `MCP HTTP server listening on http://${HTTP_HOST}:${HTTP_PORT}/mcp`,
     );

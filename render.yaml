@@ -18,3 +18,9 @@ services:
         value: http
       - key: HOST
         value: 0.0.0.0
+      - key: ALLOWED_HOSTS
+        value: mcp-server-google-calendar.onrender.com
+      - key: ALLOW_ANY_HOST
+        value: "false"
+      - key: MCP_API_KEY
+        sync: false
