@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import dotenv from "dotenv";
+import type { Request, Response } from "express";
 import { google } from "googleapis";
 import { z } from "zod";
 
@@ -13,12 +16,9 @@ const DEFAULT_TIMEZONE =
   process.env.CALENDAR_TIMEZONE ??
   Intl.DateTimeFormat().resolvedOptions().timeZone ??
   "UTC";
-
-// create the MCP server
-const server = new McpServer({
-  name: "Nikouz's Calendar",
-  version: "1.0.0",
-});
+const MCP_TRANSPORT = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
+const HTTP_HOST = process.env.HOST ?? "0.0.0.0";
+const HTTP_PORT = Number(process.env.PORT ?? "3000");
 
 const formatDateInTimeZone = (date: Date, timeZone: string): string => {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -180,34 +180,123 @@ const getMyCalendarDataByDate = async (date: string) => {
 };
 
 // register the tool to MCP
-server.registerTool(
-  "getMyCalendarDataByDate",
-  {
-    description:
-      "Returns meetings from my Google Calendar for a given date (YYYY-MM-DD), including all-day events and timezone-aware times.",
-    inputSchema: {
-      date: z.string().regex(INPUT_DATE_REGEX, {
-        message: "Invalid date format. Expected YYYY-MM-DD.",
-      }),
-    },
-  },
-  async ({ date }) => {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(await getMyCalendarDataByDate(date)),
-        },
-      ],
-    };
-  },
-);
+const createServer = () => {
+  const server = new McpServer({
+    name: "Nikouz's Calendar",
+    version: "1.0.0",
+  });
 
-// set transfer protocol and start the server
+  server.registerTool(
+    "getMyCalendarDataByDate",
+    {
+      description:
+        "Returns meetings from my Google Calendar for a given date (YYYY-MM-DD), including all-day events and timezone-aware times.",
+      inputSchema: {
+        date: z.string().regex(INPUT_DATE_REGEX, {
+          message: "Invalid date format. Expected YYYY-MM-DD.",
+        }),
+      },
+    },
+    async ({ date }) => {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(await getMyCalendarDataByDate(date)),
+          },
+        ],
+      };
+    },
+  );
+
+  return server;
+};
+
+const sendJsonRpcMethodNotAllowed = (res: Response) => {
+  return res.status(405).json({
+    jsonrpc: "2.0",
+    error: {
+      code: -32000,
+      message: "Method not allowed.",
+    },
+    id: null,
+  });
+};
+
+const startHttpServer = () => {
+  const app = createMcpExpressApp({ host: HTTP_HOST });
+
+  app.get("/healthz", (_req: Request, res: Response) => {
+    return res.status(200).json({
+      status: "ok",
+      transport: "http",
+      name: "Nikouz's Calendar",
+    });
+  });
+
+  app.post("/mcp", async (req: Request, res: Response) => {
+    const server = createServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
+
+    res.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("Error handling MCP request:", error);
+      if (!res.headersSent) {
+        return res.status(500).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32603,
+            message: "Internal server error",
+          },
+          id: null,
+        });
+      }
+    }
+  });
+
+  app.get("/mcp", (_req: Request, res: Response) => {
+    return sendJsonRpcMethodNotAllowed(res);
+  });
+
+  app.delete("/mcp", (_req: Request, res: Response) => {
+    return sendJsonRpcMethodNotAllowed(res);
+  });
+
+  app.listen(HTTP_PORT, HTTP_HOST, () => {
+    console.log(
+      `MCP HTTP server listening on http://${HTTP_HOST}:${HTTP_PORT}/mcp`,
+    );
+  });
+};
+
 const init = async () => {
+  if (MCP_TRANSPORT === "http") {
+    startHttpServer();
+    return;
+  }
+
+  if (MCP_TRANSPORT !== "stdio") {
+    console.warn(
+      `Unknown MCP_TRANSPORT "${MCP_TRANSPORT}". Falling back to stdio.`,
+    );
+  }
+
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 };
 
 // call the initialization
-init();
+init().catch((err) => {
+  console.error("Fatal startup error:", err);
+  process.exit(1);
+});

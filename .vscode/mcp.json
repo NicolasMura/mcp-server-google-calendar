@@ -1,10 +1,10 @@
 {
   "servers": {
-    "nikouz-calendar-data": {
+    "nikouzCalendarData": {
+      "type": "stdio",
       "command": "node",
-      "args": [
-        "/Users/nmura/dev/perso/ia-tests/mcp-server-custom/dist/server.js"
-      ]
+      "args": ["${workspaceFolder}/dist/server.js"],
+      "envFile": "${workspaceFolder}/.env"
     }
   }
 }
