@@ -71,6 +71,24 @@ GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END P
 GOOGLE_DELEGATED_USER_EMAIL=<USER_TO_IMPERSONATE> # Same than CALENDAR_ID
 ```
 
+## Depannage: erreur OpenSSL sur la cle privee
+
+Si tu vois:
+
+```text
+Google Calendar request failed (status ERR_OSSL_UNSUPPORTED): error:1E08010C:DECODER routines::unsupported
+```
+
+verifie dans l'ordre:
+
+1. `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY` contient bien une cle PEM complete (`-----BEGIN PRIVATE KEY-----` ... `-----END PRIVATE KEY-----`).
+2. Les retours a la ligne sont bien echappes en `\\n` dans la variable d'environnement (pas de sauts de ligne bruts dans le dashboard).
+3. La valeur n'est pas tronquee (copie complete depuis `private_key` du JSON du service account).
+4. `GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL` correspond exactement a `client_email` du meme JSON.
+5. Si tu utilises Render, redeploie le service apres mise a jour des variables d'environnement.
+
+Le serveur valide maintenant la cle au demarrage de l'auth et retourne un message explicite si le format est invalide.
+
 - Service account + delegation (Google Workspace)
 
 1. Dans Google Cloud, active l'API Google Calendar.

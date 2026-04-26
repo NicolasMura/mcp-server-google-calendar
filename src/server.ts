@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createPrivateKey } from "node:crypto";
 import dotenv from "dotenv";
 import type { Request, Response } from "express";
 import { google } from "googleapis";
@@ -54,16 +55,50 @@ const isGoogleApiLikeError = (
   return typeof err === "object" && err !== null && "message" in err;
 };
 
+const normalizeServiceAccountPrivateKey = (rawValue: string): string => {
+  let value = rawValue.trim();
+
+  // Handle values copied with wrapping quotes in env files or dashboards.
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+
+  if (value.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(value) as { private_key?: unknown };
+      if (typeof parsed.private_key === "string") {
+        value = parsed.private_key;
+      }
+    } catch {
+      // Keep original value when JSON parsing fails.
+    }
+  }
+
+  return value.replace(/\r\n/g, "\n").replace(/\\n/g, "\n");
+};
+
+const isReadablePrivateKey = (privateKey: string): boolean => {
+  try {
+    createPrivateKey(privateKey);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const getCalendarAuth = () => {
   const serviceAccountClientEmail =
     process.env.GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL;
-  const serviceAccountPrivateKey =
+  const serviceAccountPrivateKeyRaw =
     process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
   const delegatedUserEmail = process.env.GOOGLE_DELEGATED_USER_EMAIL;
 
   if (
     !serviceAccountClientEmail ||
-    !serviceAccountPrivateKey ||
+    !serviceAccountPrivateKeyRaw ||
     !delegatedUserEmail
   ) {
     return {
@@ -72,9 +107,20 @@ const getCalendarAuth = () => {
     };
   }
 
+  const serviceAccountPrivateKey = normalizeServiceAccountPrivateKey(
+    serviceAccountPrivateKeyRaw,
+  );
+
+  if (!isReadablePrivateKey(serviceAccountPrivateKey)) {
+    return {
+      error:
+        "Invalid GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: unable to decode private key. Expected a PEM key from service account JSON (BEGIN PRIVATE KEY) with escaped newlines (\\n).",
+    };
+  }
+
   const auth = new google.auth.JWT({
     email: serviceAccountClientEmail,
-    key: serviceAccountPrivateKey.replace(/\\n/g, "\n"),
+    key: serviceAccountPrivateKey,
     scopes: [CALENDAR_READONLY_SCOPE],
     subject: delegatedUserEmail,
   });
